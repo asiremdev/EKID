@@ -1,0 +1,675 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// WLIDI — Prisma schema
+// Database: Neon PostgreSQL
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum Role {
+  PARENT
+  ADMIN
+}
+
+enum AgeGroup {
+  AGE_3_5
+  AGE_5_7
+  AGE_7_10
+}
+
+enum GameId {
+  COLOR_GARDEN
+  NUMBER_QUEST
+  WORD_LAB
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+enum SubscriptionPlan {
+  MONTH_1
+  MONTH_3
+  MONTH_12
+  YEAR_1
+  LIFETIME
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+enum ActivityType {
+  multiple_choice
+  tap_object
+  match_pairs
+  letter_tracing
+  number_tracing
+  puzzle
+  memory
+  sequence
+  missing_letter
+  missing_number
+  categorization
+  odd_one_out
+  maze
+  shadow_match
+  counting
+  reading
+  word_search
+  crossword
+  geography
+  science
+  history
+  logic
+  fractions
+  math
+}
+
+enum AttemptStatus {
+  STARTED
+  COMPLETED
+  ABANDONED
+  FAILED
+}
+
+enum TransactionType {
+  EARN
+  SPEND
+  UNLOCK
+  TRANSFER_IN
+  TRANSFER_OUT
+  ADJUSTMENT
+}
+
+enum ChallengeType {
+  DAILY
+  WEEKLY
+}
+
+enum UnlockStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+enum UnlockSource {
+  AUTO
+  MANUAL
+}
+
+enum TokenType {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+}
+
+// ─── Users / Auth ────────────────────────────────────────────────────────────
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String
+  name            String
+  role            Role      @default(PARENT)
+  emailVerified   Boolean   @default(false)
+  emailVerifiedAt DateTime?
+  avatarUrl       String?
+  locale          String    @default("en")
+  isActive        Boolean   @default(true)
+  lastLoginAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sessions      Session[]
+  subscription  Subscription?
+  payments      Payment[]
+  children      Child[]
+  authTokens    AuthToken[]
+  auditLogs     AuditLog[]
+
+  @@index([email])
+  @@map("users")
+}
+
+model Session {
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokenHash String
+  userAgent        String?
+  ipAddress        String?
+  deviceName       String?
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  lastUsedAt       DateTime  @default(now())
+  createdAt        DateTime  @default(now())
+
+  @@index([userId])
+  @@index([refreshTokenHash])
+  @@map("sessions")
+}
+
+model AuthToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      TokenType
+  tokenHash String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, type])
+  @@index([tokenHash])
+  @@map("auth_tokens")
+}
+
+// ─── Subscriptions / Payments ─────────────────────────────────────────────────
+
+model Subscription {
+  id               String             @id @default(cuid())
+  userId           String             @unique
+  user             User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status           SubscriptionStatus @default(TRIAL)
+  plan             SubscriptionPlan?
+  trialStartedAt   DateTime           @default(now())
+  trialEndsAt      DateTime
+  currentPeriodEnd DateTime?
+  cancelledAt      DateTime?
+  provider         String? // e.g. "stripe", "paddle", "manual"
+  providerRef      String? // external subscription id
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  payments Payment[]
+
+  @@index([status])
+  @@map("subscriptions")
+}
+
+model Payment {
+  id             String        @id @default(cuid())
+  userId         String
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscriptionId String?
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id])
+  provider       String
+  providerRef    String?
+  plan           SubscriptionPlan
+  amountCents    Int
+  currency       String        @default("USD")
+  status         PaymentStatus @default(PENDING)
+  metadata       Json?
+  paidAt         DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@map("payments")
+}
+
+// ─── Children ──────────────────────────────────────────────────────────────────
+
+model Child {
+  id            String   @id @default(cuid())
+  parentId      String
+  parent        User     @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  name          String
+  avatar        String?
+  ageGroup      AgeGroup
+  // Cached gamification counters (source of truth lives in ledgers below)
+  stars         Int      @default(0)
+  xp            Int      @default(0)
+  level         Int      @default(1)
+  currentStreak Int      @default(0)
+  bestStreak    Int      @default(0)
+  minutesEarned Int      @default(0) // totalMinutesEarned
+  minutesSpent  Int      @default(0) // totalMinutesSpent
+  lastActiveDay DateTime?
+  isActive      Boolean  @default(true)
+
+  // Phase 2C — unified product state
+  protectionActive   Boolean @default(false)
+  onboardingComplete Boolean @default(false)
+  defaultRuleId      String? // reward rule used for automatic unlocks
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  attempts          ActivityAttempt[]
+  transactions      StarTransaction[]
+  xpEvents          XpEvent[]
+  levelHistory      LevelHistory[]
+  streakEvents      StreakEvent[]
+  achievements      ChildAchievement[]
+  challengeProgress ChallengeProgress[]
+  unlocks           Unlock[]
+  usageHistory      UsageHistory[]
+  protectedApps     ProtectedApp[]
+  rewardRules       RewardRule[]
+  device            ChildDevice?
+  gameProgress      GameLevelProgress[]
+  installedApps     ChildInstalledApp[]
+
+  @@index([parentId])
+  @@map("children")
+}
+
+// ─── Child device pairing (WLIDI parent ↔ WLIDI-kids) ─────────────────────────
+
+model ChildDevice {
+  id           String    @id @default(cuid())
+  childId      String    @unique
+  child        Child     @relation(fields: [childId], references: [id], onDelete: Cascade)
+  deviceName   String?
+  isPaired     Boolean   @default(true)
+  lastSyncAt   DateTime?
+  pairedAt     DateTime  @default(now())
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@map("child_devices")
+}
+
+model ChildInstalledApp {
+  id          String   @id @default(cuid())
+  childId     String
+  child       Child    @relation(fields: [childId], references: [id], onDelete: Cascade)
+  packageName String
+  appLabel    String?
+  reportedAt  DateTime @default(now())
+
+  @@unique([childId, packageName])
+  @@index([childId])
+  @@map("child_installed_apps")
+}
+
+model PairingCode {
+  id        String    @id @default(cuid())
+  parentId  String
+  childId   String
+  code      String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([code])
+  @@index([parentId])
+  @@map("pairing_codes")
+}
+
+model GameLevelProgress {
+  id          String   @id @default(cuid())
+  childId     String
+  child       Child    @relation(fields: [childId], references: [id], onDelete: Cascade)
+  gameId      GameId
+  level       Int
+  completed   Boolean  @default(false)
+  starsEarned Int      @default(0)
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([childId, gameId, level])
+  @@index([childId])
+  @@map("game_level_progress")
+}
+
+// ─── Protection & reward configuration (Phase 2C) ───────────────────────────────
+
+model ProtectedApp {
+  id          String  @id @default(cuid())
+  childId     String
+  child       Child   @relation(fields: [childId], references: [id], onDelete: Cascade)
+  packageName String
+  appLabel    String?
+  enabled     Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([childId, packageName])
+  @@index([childId])
+  @@map("protected_apps")
+}
+
+model RewardRule {
+  id             String  @id @default(cuid())
+  childId        String
+  child          Child   @relation(fields: [childId], references: [id], onDelete: Cascade)
+  starsRequired  Int
+  minutesGranted Int
+  sortOrder      Int     @default(0)
+  isDefault      Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([childId, starsRequired])
+  @@index([childId])
+  @@map("reward_rules")
+}
+
+// ─── Activities ────────────────────────────────────────────────────────────────
+
+model Activity {
+  id          String       @id @default(cuid())
+  type        ActivityType
+  slug        String       @unique
+  title       String
+  description String?
+  ageGroup    AgeGroup
+  difficulty  Int          @default(1) // 1..5
+  subject     String? // e.g. "math", "reading"
+  starsReward Int          @default(5)
+  xpReward    Int          @default(10)
+  metadata    Json // type-specific content (questions, pairs, tracing paths, ...)
+  isActive    Boolean      @default(true)
+  order       Int          @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  attempts ActivityAttempt[]
+
+  @@index([type])
+  @@index([ageGroup])
+  @@index([isActive])
+  @@map("activities")
+}
+
+model ActivityAttempt {
+  id              String        @id @default(cuid())
+  childId         String
+  child           Child         @relation(fields: [childId], references: [id], onDelete: Cascade)
+  activityId      String
+  activity        Activity      @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  status          AttemptStatus @default(STARTED)
+  score           Int           @default(0) // 0..100
+  starsEarned     Int           @default(0)
+  xpEarned        Int           @default(0)
+  durationSeconds Int           @default(0)
+  answers         Json?
+  startedAt       DateTime      @default(now())
+  completedAt     DateTime?
+
+  @@index([childId])
+  @@index([activityId])
+  @@index([status])
+  @@map("activity_attempts")
+}
+
+// ─── Stars economy (ledger) ─────────────────────────────────────────────────────
+
+model StarTransaction {
+  id           String          @id @default(cuid())
+  childId      String
+  child        Child           @relation(fields: [childId], references: [id], onDelete: Cascade)
+  type         TransactionType
+  amount       Int // signed: + earn, - spend
+  balanceAfter Int
+  reason       String
+  referenceId  String? // attemptId, unlockId, etc.
+  metadata     Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([childId])
+  @@index([type])
+  @@map("star_transactions")
+}
+
+// ─── XP & Levels ─────────────────────────────────────────────────────────────────
+
+model LevelConfig {
+  level      Int     @id // 1..100
+  xpRequired Int // cumulative XP needed to reach this level
+  title      String?
+  rewardJson Json?
+
+  @@map("level_configs")
+}
+
+model XpEvent {
+  id          String @id @default(cuid())
+  childId     String
+  child       Child  @relation(fields: [childId], references: [id], onDelete: Cascade)
+  amount      Int
+  source      String // "activity", "challenge", "achievement", "streak"
+  referenceId String?
+  levelBefore Int
+  levelAfter  Int
+
+  createdAt DateTime @default(now())
+
+  @@index([childId])
+  @@map("xp_events")
+}
+
+model LevelHistory {
+  id         String   @id @default(cuid())
+  childId    String
+  child      Child    @relation(fields: [childId], references: [id], onDelete: Cascade)
+  level      Int
+  achievedAt DateTime @default(now())
+
+  @@index([childId])
+  @@map("level_history")
+}
+
+// ─── Streaks ───────────────────────────────────────────────────────────────────
+
+model StreakEvent {
+  id        String   @id @default(cuid())
+  childId   String
+  child     Child    @relation(fields: [childId], references: [id], onDelete: Cascade)
+  day       DateTime // normalized to midnight UTC
+  streak    Int // streak value on this day
+  milestone Int? // 3,7,14,30,60,90 when reached
+
+  createdAt DateTime @default(now())
+
+  @@unique([childId, day])
+  @@index([childId])
+  @@map("streak_events")
+}
+
+// ─── Achievements ────────────────────────────────────────────────────────────────
+
+model Achievement {
+  id          String  @id @default(cuid())
+  code        String  @unique // "FIRST_ACTIVITY", "STARS_100", ...
+  title       String
+  description String
+  icon        String?
+  // Engine criteria: { metric: "stars" | "streak" | "level" | "activities", threshold: number }
+  metric      String
+  threshold   Int
+  starsReward Int     @default(0)
+  xpReward    Int     @default(0)
+  isActive    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  children ChildAchievement[]
+
+  @@map("achievements")
+}
+
+model ChildAchievement {
+  id            String      @id @default(cuid())
+  childId       String
+  child         Child       @relation(fields: [childId], references: [id], onDelete: Cascade)
+  achievementId String
+  achievement   Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+  progress      Int         @default(0)
+  unlockedAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([childId, achievementId])
+  @@index([childId])
+  @@map("child_achievements")
+}
+
+// ─── Challenges ──────────────────────────────────────────────────────────────────
+
+model Challenge {
+  id          String        @id @default(cuid())
+  type        ChallengeType
+  title       String
+  description String
+  // criteria: { metric: "activities" | "stars" | "xp", target: number }
+  metric      String
+  target      Int
+  starsReward Int           @default(0)
+  xpReward    Int           @default(0)
+  ageGroup    AgeGroup?
+  startsAt    DateTime
+  endsAt      DateTime
+  isActive    Boolean       @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  progress ChallengeProgress[]
+
+  @@index([type])
+  @@index([isActive])
+  @@map("challenges")
+}
+
+model ChallengeProgress {
+  id          String    @id @default(cuid())
+  childId     String
+  child       Child     @relation(fields: [childId], references: [id], onDelete: Cascade)
+  challengeId String
+  challenge   Challenge @relation(fields: [challengeId], references: [id], onDelete: Cascade)
+  progress    Int       @default(0)
+  completed   Boolean   @default(false)
+  completedAt DateTime?
+  rewardClaimed Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([childId, challengeId])
+  @@index([childId])
+  @@map("challenge_progress")
+}
+
+// ─── Unlocks & Usage (links to the Android app-locking layer) ────────────────────
+
+// UnlockSession — tracks star-spent app time (Phase 2C)
+model Unlock {
+  id          String       @id @default(cuid())
+  childId     String
+  child       Child        @relation(fields: [childId], references: [id], onDelete: Cascade)
+  appPackage  String
+  appLabel    String?
+  minutes     Int          // minutesGranted
+  starsCost   Int          // starsSpent
+  source      UnlockSource @default(MANUAL)
+  status      UnlockStatus @default(ACTIVE)
+  startedAt   DateTime     @default(now())
+  expiresAt   DateTime     // endTime
+
+  createdAt DateTime @default(now())
+
+  @@index([childId])
+  @@index([childId, appPackage, status])
+  @@index([status])
+  @@map("unlocks")
+}
+
+model UsageHistory {
+  id          String   @id @default(cuid())
+  childId     String
+  child       Child    @relation(fields: [childId], references: [id], onDelete: Cascade)
+  appPackage  String
+  appLabel    String?
+  minutesUsed Int
+  day         DateTime // normalized to midnight UTC
+
+  createdAt DateTime @default(now())
+
+  @@index([childId, day])
+  @@map("usage_history")
+}
+
+// ─── Analytics ───────────────────────────────────────────────────────────────────
+
+model AnalyticsEvent {
+  id        String   @id @default(cuid())
+  // scope can be a parent (userId) or child (childId)
+  userId    String?
+  childId   String?
+  name      String // "activity_started", "activity_completed", "stars_earned", ...
+  value     Int      @default(1)
+  metadata  Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([name])
+  @@index([childId])
+  @@index([createdAt])
+  @@map("analytics_events")
+}
+
+model DailyMetric {
+  id                 String   @id @default(cuid())
+  day                DateTime @unique // midnight UTC
+  activitiesStarted  Int      @default(0)
+  activitiesCompleted Int     @default(0)
+  starsEarned        Int      @default(0)
+  minutesUnlocked    Int      @default(0)
+  dau                Int      @default(0)
+  wau                Int      @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("daily_metrics")
+}
+
+// ─── Audit Logs ──────────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String // "auth.login", "child.create", "stars.spend", ...
+  entity    String? // "Child", "Subscription", ...
+  entityId  String?
+  ipAddress String?
+  userAgent String?
+  metadata  Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
