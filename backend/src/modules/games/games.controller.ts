@@ -13,7 +13,7 @@ export class GamesController {
   constructor(private readonly games: GamesService) {}
 
   @Get()
-    @ApiOperation({ summary: 'Get the educative game for this child (50 levels, 5 worlds)' })
+    @ApiOperation({ summary: 'Get the educative game for this child (150 levels, 10 worlds)' })
   state(@CurrentChild('id') childId: string) {
     return this.games.getGameState(childId);
   }
